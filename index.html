@@ -252,6 +252,10 @@
     let spawnTimer = 0;
     let baseSpeed = 250; 
     let spawnInterval = 1200; 
+    
+    // Pattern state
+    let nextPatternThreshold = 100;
+    let isSpawningPattern = false;
 
     // Item Dictionary Settings
     const ITEM_TYPES = [
@@ -291,6 +295,8 @@
         // Reset states
         score = 0;
         lives = 3;
+        nextPatternThreshold = 100;
+        isSpawningPattern = false;
         
         // Remove all current items
         items.forEach(i => i.element.remove());
@@ -311,18 +317,29 @@
         requestAnimationFrame(gameLoop);
     }
 
-    function spawnItem() {
-        // Select an item randomly based on pre-defined weight config
-        let totalWeight = ITEM_TYPES.reduce((acc, obj) => acc + obj.weight, 0);
-        let rand = Math.random() * totalWeight;
-        let selectedType = ITEM_TYPES[0];
+    function spawnItem(forcedType = null, forcedX = null, yOffset = 0, forcedEmoji = null) {
+        let selectedType;
         
-        for (let type of ITEM_TYPES) {
-            if (rand < type.weight) {
-                selectedType = type;
-                break;
+        if (forcedEmoji) {
+            // Create a specific, non-random item
+            selectedType = { emoji: forcedEmoji, type: forcedType || 'bad', points: 0, weight: 0 };
+        } else if (forcedType) {
+            // Find a random item of the specific type requested (good, bad, special)
+            const availableTypes = ITEM_TYPES.filter(t => t.type === forcedType);
+            selectedType = availableTypes[Math.floor(Math.random() * availableTypes.length)];
+        } else {
+            // Select an item randomly based on pre-defined weight config
+            let totalWeight = ITEM_TYPES.reduce((acc, obj) => acc + obj.weight, 0);
+            let rand = Math.random() * totalWeight;
+            selectedType = ITEM_TYPES[0];
+            
+            for (let type of ITEM_TYPES) {
+                if (rand < type.weight) {
+                    selectedType = type;
+                    break;
+                }
+                rand -= type.weight;
             }
-            rand -= type.weight;
         }
 
         // Create DOM element
@@ -334,14 +351,74 @@
         // Compute the dimension and boundaries safely
         const size = el.offsetWidth || 50; 
         const maxX = container.offsetWidth - size;
-        const x = Math.max(0, Math.random() * maxX);
+        
+        const x = forcedX !== null ? Math.max(0, Math.min(maxX, forcedX)) : Math.max(0, Math.random() * maxX);
 
         items.push({
             element: el,
             type: selectedType,
             x: x,
-            y: -80, // Offset spawn point to originate outside upper container
+            y: -80 - yOffset, // Offset spawn point to originate outside upper container
         });
+    }
+
+    // Pattern definitions
+    function spawnPattern(patternIndex) {
+        isSpawningPattern = true;
+        const width = container.offsetWidth;
+        const itemSize = 90; // Größerer Abstand zwischen Items (vorher 60)
+        const itemsPerRow = Math.floor(width / itemSize);
+        
+        // Pick either Aubergine or Ananas for this specific pattern to make it readable
+        const patternBadEmoji = Math.random() > 0.5 ? '🍆' : '🍍';
+        const spawnBad = (x, y) => spawnItem('bad', x, y, patternBadEmoji);
+        
+        switch(patternIndex) {
+            case 0: // Pattern 1: Die Gemüse-Wand (Eine Reihe Gemüse, aber 2 Felder Platz + Fleisch in der Mitte)
+                const safeSpot = Math.floor(Math.random() * (itemsPerRow - 1)); // Lücke von 2 Feldern
+                for (let i = 0; i < itemsPerRow; i++) {
+                    if (i === safeSpot || i === safeSpot + 1) {
+                        // Fleisch genau in der Mitte der Lücke
+                        if (i === safeSpot) {
+                            spawnItem('good', i * itemSize + (itemSize), 0);
+                        }
+                    } else {
+                        spawnBad(i * itemSize + (itemSize/2), 0);
+                    }
+                }
+                break;
+
+            case 1: // Pattern 2 (Ehemals 3): Zick-Zack Parade (Riesige Abstände)
+                // Nur 4 Blöcke, sehr weit rechts oder links
+                for (let i = 0; i < 4; i++) {
+                    const isLeft = i % 2 === 0;
+                    const offset = isLeft ? 40 : width - 110;
+                    spawnBad(offset, i * 140);
+                    spawnBad(offset + (isLeft ? 70 : -70), i * 140 + 50);
+                    // Dazwischen gutes Fleisch als Köder (mehr zur Mitte gerückt)
+                    spawnItem('good', width / 2 + (isLeft ? 50 : -50), i * 140 + 75);
+                }
+                break;
+
+            case 2: // Pattern 3 (Ehemals 4): Fleisch-Regen / Bonus Runde (Nur gute Items)
+                for (let i = 0; i < 8; i++) {
+                    spawnItem('good', Math.random() * (width - 60), Math.random() * 300);
+                }
+                break;
+
+            case 3: // Pattern 4 (Ehemals 5): Risiko & Belohnung (Viel weiter weg)
+                const cx = width / 2;
+                spawnItem('special', cx, 0);                  // Mitte oben
+                spawnBad(cx, -130);                   // Verteidigt von oben weit weg
+                spawnBad(cx - 120, 0);                // Verteidigt von links weit weg
+                spawnBad(cx + 120, 0);                // Verteidigt von rechts weit weg
+                break;
+        }
+
+        // Mehr Zeit zum durchatmen lassen, nachdem das Pattern gespawnt ist (2s statt 1.5s)
+        setTimeout(() => {
+            isSpawningPattern = false;
+        }, 2000);
     }
 
     // Keyboard Input Handling Arrays
@@ -498,17 +575,28 @@
         playerX = Math.max(playerWidth / 2, Math.min(playerX, container.offsetWidth - playerWidth / 2));
         updatePlayerPos();
 
+        // Check for pattern thresholds (e.g., passing 100, 200, 300 points)
+        if (score >= nextPatternThreshold) {
+            const patternIndex = (nextPatternThreshold / 100 - 1) % 4; // Loops through 0-3 (4 Patterns total)
+            spawnPattern(patternIndex);
+            
+            // Set next threshold and give exactly 100 points buffer (plus slightly random offset to avoid predictable spawns)
+            nextPatternThreshold += 100;
+        }
+
         // Formula: Scaled progression coefficient that accelerates items consistently
         // Example: 300 pts implies a theoretical doubled progression loop (2x) compared to start!
         const diffMult = 1 + (score / 300);
 
         // Determine whether enough timer threshold elapsed -> Release an entity 
-        spawnTimer += dt * 1000;
-        const currentSpawnInterval = Math.max(350, spawnInterval / diffMult); 
-        
-        if (spawnTimer >= currentSpawnInterval) {
-            spawnTimer = 0;
-            spawnItem();
+        if (!isSpawningPattern) {
+            spawnTimer += dt * 1000;
+            const currentSpawnInterval = Math.max(350, spawnInterval / diffMult); 
+            
+            if (spawnTimer >= currentSpawnInterval) {
+                spawnTimer = 0;
+                spawnItem();
+            }
         }
 
         const fallSpeed = baseSpeed * diffMult;
